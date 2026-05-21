@@ -1,116 +1,150 @@
-import { Handle, type Node, type NodeProps, Position } from '@xyflow/react'
-import { memo } from 'react'
-import { Badge } from '@/components/ui/badge'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Handle, type Node, type NodeProps, Position } from "@xyflow/react";
+import { memo } from "react";
+import { Badge } from "@/components/ui/badge";
 import {
-  type NetworkType,
-  TIP_STATUS_COLORS,
-  TIP_STATUS_DESCRIPTIONS,
-  TIP_STATUS_LABELS,
-  type TipStatusEntry,
-} from './types'
-import { formatMinerLabel } from './utils'
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { MempoolHashLink } from "./MempoolHashLink";
+import {
+	type Network,
+	type NetworkType,
+	TIP_STATUS_COLORS,
+	TIP_STATUS_DESCRIPTIONS,
+	TIP_STATUS_LABELS,
+	type TipStatusEntry,
+} from "./types";
+import { formatMinerLabel } from "./utils";
 
 type BlockTreeNodeData = {
-  height: number
-  hash: string
-  miner: string
-  networkType: NetworkType
-  tipStatuses: TipStatusEntry[]
-  onBlockClick: () => void
+	height: number;
+	hash: string;
+	miner: string;
+	network: Network;
+	networkType: NetworkType;
+	tipStatuses: TipStatusEntry[];
+	onBlockClick: () => void;
+};
+
+export type BlockTreeNodeType = Node<BlockTreeNodeData, "block">;
+
+function BlockTreeNodeComponent({
+	data,
+	selected,
+}: NodeProps<BlockTreeNodeType>) {
+	const truncatedHash = `…${data.hash.slice(-8)}`;
+	const minerLabel = formatMinerLabel(data.miner);
+	const hasMiner =
+		data.networkType === "Mainnet" && minerLabel !== "Unknown Miner";
+
+	return (
+		<div className="group relative w-32 max-w-36">
+			<Handle
+				type="target"
+				position={Position.Left}
+				className={[
+					"absolute! top-8! h-3 w-3 border-2 border-background after:pointer-events-none after:absolute after:inset-[-0.22rem] after:rounded-full after:bg-current after:opacity-25 after:blur-[6px] after:content-['']",
+					selected
+						? "bg-accent text-accent"
+						: "bg-muted-foreground text-muted-foreground",
+				].join(" ")}
+			/>
+
+			<div
+				className={[
+					"relative min-h-16 w-full overflow-hidden rounded-sm border border-border/75 bg-muted/45 pl-3 py-2.5 text-left dark:border-border/95 dark:bg-card/90",
+					"shadow-(--elevation-soft) backdrop-blur-md",
+					"transition-[transform,border-color,box-shadow,background] duration-200 ease-out",
+					"hover:-translate-y-0.5 hover:shadow-(--elevation-lift)",
+					selected
+						? "border-accent/80 bg-accent/7 shadow-[0_0_0_1px_var(--accent),0_18px_40px_-20px_var(--surface-glow)]"
+						: "border-border/80 group-hover:border-accent/35",
+				].join(" ")}
+			>
+				<button
+					type="button"
+					onClick={data.onBlockClick}
+					title={`Block #${data.height}`}
+					aria-label={`Open details for block ${data.height}`}
+					className="absolute inset-0 z-0 cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+				/>
+				<div className="relative z-10 flex min-h-16 flex-col pointer-events-none">
+					<p className="text-base font-bold tabular-nums leading-none text-foreground">
+						#{data.height}
+					</p>
+					<MempoolHashLink
+						network={data.network}
+						hash={data.hash}
+						itemType="block"
+						title={data.hash}
+						className="pointer-events-auto mt-2.5 inline-flex items-center gap-1 break-all font-mono text-[11px] leading-none text-foreground/70 underline-offset-4 hover:text-primary hover:underline"
+					>
+						{truncatedHash}
+					</MempoolHashLink>
+
+					{data.tipStatuses.length > 0 && (
+						<ul
+							className="mt-2 flex max-w-full flex-col gap-1 overflow-hidden"
+							aria-label="Tip status overview"
+						>
+							{data.tipStatuses.map((tipStatus) => (
+								<li key={tipStatus.status}>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<Badge
+												variant="outline"
+												className="inline-flex shrink-0 items-center gap-1 self-start rounded-full bg-background/75 px-1.5 py-0.5"
+											>
+												<span
+													className="h-1.5 w-1.5 rounded-full ring-1 ring-background/70"
+													style={{
+														backgroundColor:
+															TIP_STATUS_COLORS[tipStatus.status],
+													}}
+													aria-hidden="true"
+												/>
+												<span className="text-[10px] font-semibold text-foreground">
+													{TIP_STATUS_LABELS[tipStatus.status]}
+												</span>
+												<span className="rounded-full bg-muted px-1 text-[10px] text-muted-foreground">
+													{tipStatus.nodeNames.length}
+												</span>
+											</Badge>
+										</TooltipTrigger>
+										<TooltipContent className="max-w-64">
+											{TIP_STATUS_DESCRIPTIONS[tipStatus.status]}
+										</TooltipContent>
+									</Tooltip>
+								</li>
+							))}
+						</ul>
+					)}
+				</div>
+			</div>
+
+			{hasMiner && (
+				<p
+					className="absolute top-full mt-1 w-full truncate px-1 text-center text-[10px] text-muted-foreground"
+					title={minerLabel}
+				>
+					{minerLabel}
+				</p>
+			)}
+
+			<Handle
+				type="source"
+				position={Position.Right}
+				className={[
+					"absolute! top-8! h-3 w-3 border-2 border-background after:pointer-events-none after:absolute after:inset-[-0.22rem] after:rounded-full after:bg-current after:opacity-25 after:blur-[6px] after:content-['']",
+					selected
+						? "bg-accent text-accent"
+						: "bg-muted-foreground text-muted-foreground",
+				].join(" ")}
+			/>
+		</div>
+	);
 }
 
-export type BlockTreeNodeType = Node<BlockTreeNodeData, 'block'>
-
-function BlockTreeNodeComponent({ data, selected }: NodeProps<BlockTreeNodeType>) {
-  const truncatedHash = `…${data.hash.slice(-8)}`
-  const minerLabel = formatMinerLabel(data.miner)
-  const hasMiner = data.networkType === 'Mainnet' && minerLabel !== 'Unknown Miner'
-
-  return (
-    <div className="group relative w-32 max-w-36">
-      <Handle
-        type="target"
-        position={Position.Left}
-        className={[
-          "absolute! top-8! h-3 w-3 border-2 border-background after:pointer-events-none after:absolute after:inset-[-0.22rem] after:rounded-full after:bg-current after:opacity-25 after:blur-[6px] after:content-['']",
-          selected ? 'bg-accent text-accent' : 'bg-muted-foreground text-muted-foreground',
-        ].join(' ')}
-      />
-
-      <button
-        type="button"
-        onClick={data.onBlockClick}
-        title={`Block #${data.height}`}
-        aria-label={`Open details for block ${data.height}`}
-        className={[
-          'relative flex min-h-16 w-full flex-col overflow-hidden rounded-sm border border-border/75 bg-muted/45 pl-3 py-2.5 text-left dark:border-border/95 dark:bg-card/90',
-          'cursor-pointer',
-          'shadow-(--elevation-soft) backdrop-blur-md',
-          'transition-[transform,border-color,box-shadow,background] duration-200 ease-out',
-          'hover:-translate-y-0.5 hover:shadow-(--elevation-lift)',
-          'focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-          selected
-            ? 'border-accent/80 bg-accent/7 shadow-[0_0_0_1px_var(--accent),0_18px_40px_-20px_var(--surface-glow)]'
-            : 'border-border/80 group-hover:border-accent/35',
-        ].join(' ')}
-      >
-        <p className="text-base font-bold tabular-nums leading-none text-foreground">#{data.height}</p>
-        <p className="mt-2.5 font-mono text-[11px] leading-none text-foreground/70" title={data.hash}>
-          {truncatedHash}
-        </p>
-
-        {data.tipStatuses.length > 0 && (
-          <ul className="mt-2 flex max-w-full flex-col gap-1 overflow-hidden" aria-label="Tip status overview">
-            {data.tipStatuses.map(tipStatus => (
-              <li key={tipStatus.status}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Badge
-                      variant="outline"
-                      className="inline-flex shrink-0 items-center gap-1 self-start rounded-full bg-background/75 px-1.5 py-0.5"
-                    >
-                      <span
-                        className="h-1.5 w-1.5 rounded-full ring-1 ring-background/70"
-                        style={{ backgroundColor: TIP_STATUS_COLORS[tipStatus.status] }}
-                        aria-hidden="true"
-                      />
-                      <span className="text-[10px] font-semibold text-foreground">
-                        {TIP_STATUS_LABELS[tipStatus.status]}
-                      </span>
-                      <span className="rounded-full bg-muted px-1 text-[10px] text-muted-foreground">
-                        {tipStatus.nodeNames.length}
-                      </span>
-                    </Badge>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-64">{TIP_STATUS_DESCRIPTIONS[tipStatus.status]}</TooltipContent>
-                </Tooltip>
-              </li>
-            ))}
-          </ul>
-        )}
-      </button>
-
-      {hasMiner && (
-        <p
-          className="absolute top-full mt-1 w-full truncate px-1 text-center text-[10px] text-muted-foreground"
-          title={minerLabel}
-        >
-          {minerLabel}
-        </p>
-      )}
-
-      <Handle
-        type="source"
-        position={Position.Right}
-        className={[
-          "absolute! top-8! h-3 w-3 border-2 border-background after:pointer-events-none after:absolute after:inset-[-0.22rem] after:rounded-full after:bg-current after:opacity-25 after:blur-[6px] after:content-['']",
-          selected ? 'bg-accent text-accent' : 'bg-muted-foreground text-muted-foreground',
-        ].join(' ')}
-      />
-    </div>
-  )
-}
-
-export const BlockTreeNode = memo(BlockTreeNodeComponent)
-BlockTreeNode.displayName = 'BlockTreeNode'
+export const BlockTreeNode = memo(BlockTreeNodeComponent);
+BlockTreeNode.displayName = "BlockTreeNode";

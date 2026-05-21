@@ -80,12 +80,39 @@ export type NodeInfo = {
 
 export type NetworkType = "Mainnet" | "Testnet" | "Signet" | "Regtest";
 
+export type BitcoinNodeAccessInfo = {
+	node_id: number;
+	name: string;
+	rpc_port?: number;
+	rpc_user?: string;
+	rpc_password?: string;
+	p2p_port?: number;
+};
+
+export type FulcrumAccessInfo = {
+	tcp_port: number;
+	stats_port?: number;
+};
+
+export type MempoolSpaceAccessInfo = {
+	web_port: number;
+	api_port?: number;
+};
+
+export type NetworkAccessInfo = {
+	bitcoin_nodes: BitcoinNodeAccessInfo[];
+	fulcrum?: FulcrumAccessInfo;
+	mempool_space?: MempoolSpaceAccessInfo;
+};
+
 export type Network = {
 	id: number;
 	name: string;
 	description: string;
 	network_type: NetworkType;
 	view_only_mode: boolean;
+	mempool_url?: string;
+	access_info?: NetworkAccessInfo;
 };
 
 export type NetworksResponse = {
@@ -124,6 +151,10 @@ export type RpcActionResponse = {
 export type FaucetResponse = RpcActionResponse & {
 	txid?: string;
 	mined_blocks?: number;
+};
+
+export type RewindChainResponse = RpcActionResponse & {
+	invalidated_block_hash?: string;
 };
 
 /** @deprecated Use RpcActionResponse instead. */

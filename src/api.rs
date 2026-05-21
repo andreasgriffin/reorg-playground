@@ -9,10 +9,10 @@ use axum::{
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
 };
+use bitcoincore_rpc::bitcoin::{Address, Amount, Denomination, Network as BitcoinNetwork};
 use futures_util::StreamExt;
 use futures_util::future::{join_all, ready};
 use futures_util::stream::Stream;
-use bitcoincore_rpc::bitcoin::{Address, Amount, Denomination, Network as BitcoinNetwork};
 use log::error;
 use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::BroadcastStream;
@@ -20,7 +20,7 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::config::{Network, NetworkType};
 use crate::error::FetchError;
-use crate::node::Node;
+use crate::node::{MineBlocksOptions, Node};
 use crate::types::{
     AppState, DataChanged, DataJsonResponse, MetricUnavailableReason, NetworkMetricsJson,
     NetworksJsonResponse,
@@ -203,6 +203,7 @@ pub async fn cache_changes_sse(
 pub struct MineBlockRequest {
     pub node_id: u32,
     pub count: Option<u64>,
+    pub exclude_mempool_txs: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -210,6 +211,27 @@ pub struct MineBlockResponse {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct RewindChainRequest {
+    pub node_id: u32,
+    pub depth: u64,
+}
+
+#[derive(Serialize)]
+pub struct RewindChainResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invalidated_block_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ReconsiderBlockRequest {
+    pub node_id: u32,
+    pub block_hash: String,
 }
 
 #[derive(Deserialize)]
@@ -280,7 +302,10 @@ pub async fn mine_block(
     }
 
     let count = body.count.unwrap_or(1);
-    match node.mine_new_blocks(count).await {
+    let options = MineBlocksOptions {
+        exclude_mempool_txs: body.exclude_mempool_txs.unwrap_or(false),
+    };
+    match node.mine_new_blocks_with_options(count, options).await {
         Ok(_) => (
             StatusCode::OK,
             Json(MineBlockResponse {
@@ -316,6 +341,208 @@ pub async fn mine_block(
                 Json(MineBlockResponse {
                     success: false,
                     error: Some("MINE_EXECUTION_FAILED".to_string()),
+                }),
+            )
+        }
+    }
+}
+
+pub async fn rewind_chain(
+    Path(network_id): Path<u32>,
+    State(state): State<AppState>,
+    Json(body): Json<RewindChainRequest>,
+) -> (StatusCode, Json<RewindChainResponse>) {
+    let network = match get_network(&state, network_id) {
+        Some(network) => network,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(RewindChainResponse {
+                    success: false,
+                    invalidated_block_hash: None,
+                    error: Some("REWIND_NETWORK_NOT_FOUND".to_string()),
+                }),
+            );
+        }
+    };
+    if network.view_only_mode {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(RewindChainResponse {
+                success: false,
+                invalidated_block_hash: None,
+                error: Some("REWIND_FEATURE_DISABLED".to_string()),
+            }),
+        );
+    }
+
+    let node = match get_node(network, body.node_id) {
+        Some(node) => node,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(RewindChainResponse {
+                    success: false,
+                    invalidated_block_hash: None,
+                    error: Some("REWIND_BACKEND_UNSUPPORTED".to_string()),
+                }),
+            );
+        }
+    };
+    if !node.supports_controls(network.view_only_mode) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(RewindChainResponse {
+                success: false,
+                invalidated_block_hash: None,
+                error: Some("REWIND_BACKEND_UNSUPPORTED".to_string()),
+            }),
+        );
+    }
+
+    match node.rewind_chain(body.depth).await {
+        Ok(block_hash) => (
+            StatusCode::OK,
+            Json(RewindChainResponse {
+                success: true,
+                invalidated_block_hash: Some(block_hash.to_string()),
+                error: None,
+            }),
+        ),
+        Err(e @ FetchError::NotSupported { .. }) | Err(e @ FetchError::DataError(_)) => {
+            error!(
+                "Rewind chain failed for network={} node={}: {}",
+                network_id, body.node_id, e
+            );
+            let error_code = match &e {
+                FetchError::NotSupported { .. } => "REWIND_BACKEND_UNSUPPORTED",
+                FetchError::DataError(_) => "REWIND_INVALID_REQUEST",
+                _ => "REWIND_EXECUTION_FAILED",
+            };
+            (
+                StatusCode::BAD_REQUEST,
+                Json(RewindChainResponse {
+                    success: false,
+                    invalidated_block_hash: None,
+                    error: Some(error_code.to_string()),
+                }),
+            )
+        }
+        Err(e) => {
+            error!(
+                "Rewind chain failed for network={} node={}: {}",
+                network_id, body.node_id, e
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(RewindChainResponse {
+                    success: false,
+                    invalidated_block_hash: None,
+                    error: Some("REWIND_EXECUTION_FAILED".to_string()),
+                }),
+            )
+        }
+    }
+}
+
+pub async fn reconsider_block(
+    Path(network_id): Path<u32>,
+    State(state): State<AppState>,
+    Json(body): Json<ReconsiderBlockRequest>,
+) -> (StatusCode, Json<MineBlockResponse>) {
+    let network = match get_network(&state, network_id) {
+        Some(network) => network,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(MineBlockResponse {
+                    success: false,
+                    error: Some("RECONSIDER_NETWORK_NOT_FOUND".to_string()),
+                }),
+            );
+        }
+    };
+    if network.view_only_mode {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(MineBlockResponse {
+                success: false,
+                error: Some("RECONSIDER_FEATURE_DISABLED".to_string()),
+            }),
+        );
+    }
+
+    let node = match get_node(network, body.node_id) {
+        Some(node) => node,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(MineBlockResponse {
+                    success: false,
+                    error: Some("RECONSIDER_BACKEND_UNSUPPORTED".to_string()),
+                }),
+            );
+        }
+    };
+    if !node.supports_controls(network.view_only_mode) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(MineBlockResponse {
+                success: false,
+                error: Some("RECONSIDER_BACKEND_UNSUPPORTED".to_string()),
+            }),
+        );
+    }
+
+    let block_hash = match bitcoincore_rpc::bitcoin::BlockHash::from_str(&body.block_hash) {
+        Ok(block_hash) => block_hash,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(MineBlockResponse {
+                    success: false,
+                    error: Some("RECONSIDER_INVALID_BLOCK_HASH".to_string()),
+                }),
+            );
+        }
+    };
+
+    match node.reconsider_block(&block_hash).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(MineBlockResponse {
+                success: true,
+                error: None,
+            }),
+        ),
+        Err(e @ FetchError::NotSupported { .. }) | Err(e @ FetchError::DataError(_)) => {
+            error!(
+                "Reconsider block failed for network={} node={}: {}",
+                network_id, body.node_id, e
+            );
+            let error_code = match &e {
+                FetchError::NotSupported { .. } => "RECONSIDER_BACKEND_UNSUPPORTED",
+                FetchError::DataError(_) => "RECONSIDER_INVALID_REQUEST",
+                _ => "RECONSIDER_EXECUTION_FAILED",
+            };
+            (
+                StatusCode::BAD_REQUEST,
+                Json(MineBlockResponse {
+                    success: false,
+                    error: Some(error_code.to_string()),
+                }),
+            )
+        }
+        Err(e) => {
+            error!(
+                "Reconsider block failed for network={} node={}: {}",
+                network_id, body.node_id, e
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(MineBlockResponse {
+                    success: false,
+                    error: Some("RECONSIDER_EXECUTION_FAILED".to_string()),
                 }),
             )
         }
@@ -369,7 +596,9 @@ pub async fn faucet(
         }
     };
 
-    if !node.supports_controls(network.view_only_mode) || !node.supports_mining(network.view_only_mode) {
+    if !node.supports_controls(network.view_only_mode)
+        || !node.supports_mining(network.view_only_mode)
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(FaucetResponse {
@@ -580,7 +809,7 @@ pub async fn set_network_active(
 mod tests {
     use super::*;
     use crate::config::{Network, NetworkType, StaleRateRange};
-    use crate::node::{FaucetSendResult, HeaderLocator, Node, NodeInfo};
+    use crate::node::{FaucetSendResult, HeaderLocator, MineBlocksOptions, Node, NodeInfo};
     use crate::types::{
         Cache, Caches, ChainTip, HeaderInfo, MetricUnavailableReason, NetworkMetricsJson,
         StaleBlockRateJson, StaleBlockRateRangeJson, StaleBlockRateWindowJson, Tree,
@@ -618,9 +847,12 @@ mod tests {
         mine_behavior: ControlBehavior,
         faucet_behavior: ControlBehavior,
         network_behavior: ControlBehavior,
+        chain_behavior: ControlBehavior,
         p2p_read_behavior: P2PReadBehavior,
         p2p_state: Arc<Mutex<bool>>,
-        mine_calls: Arc<Mutex<Vec<u64>>>,
+        mine_calls: Arc<Mutex<Vec<(u64, bool)>>>,
+        rewind_calls: Arc<Mutex<Vec<u64>>>,
+        reconsider_calls: Arc<Mutex<Vec<BlockHash>>>,
         faucet_calls: Arc<Mutex<Vec<(String, u64)>>>,
         faucet_result: FaucetSendResult,
         network_calls: Arc<Mutex<Vec<bool>>>,
@@ -647,9 +879,12 @@ mod tests {
                 mine_behavior,
                 faucet_behavior: ControlBehavior::Ok,
                 network_behavior,
+                chain_behavior: ControlBehavior::Ok,
                 p2p_read_behavior: P2PReadBehavior::Available,
                 p2p_state: Arc::new(Mutex::new(true)),
                 mine_calls: Arc::new(Mutex::new(Vec::new())),
+                rewind_calls: Arc::new(Mutex::new(Vec::new())),
+                reconsider_calls: Arc::new(Mutex::new(Vec::new())),
                 faucet_calls: Arc::new(Mutex::new(Vec::new())),
                 faucet_result: FaucetSendResult {
                     txid: "mock-txid".to_string(),
@@ -742,13 +977,20 @@ mod tests {
             }
         }
 
-        async fn mine_new_blocks(&self, count: u64) -> Result<Vec<BlockHash>, FetchError> {
-            self.mine_calls.lock().await.push(count);
+        async fn mine_new_blocks_with_options(
+            &self,
+            count: u64,
+            options: MineBlocksOptions,
+        ) -> Result<Vec<BlockHash>, FetchError> {
+            self.mine_calls
+                .lock()
+                .await
+                .push((count, options.exclude_mempool_txs));
             match self.mine_behavior {
                 ControlBehavior::Ok => Ok(vec![BlockHash::all_zeros()]),
                 ControlBehavior::NotSupported => Err(FetchError::NotSupported {
                     node: "mock".to_string(),
-                    operation: "mine_new_blocks",
+                    operation: "mine_new_blocks_with_options",
                 }),
                 ControlBehavior::DataError => Err(FetchError::DataError("bad input".to_string())),
                 ControlBehavior::ExecutionError => {
@@ -775,9 +1017,9 @@ mod tests {
                 ControlBehavior::DataError => Err(FetchError::DataError(
                     "insufficient funds in faucet wallet".to_string(),
                 )),
-                ControlBehavior::ExecutionError => {
-                    Err(FetchError::BitcoinCoreREST("mock faucet failure".to_string()))
-                }
+                ControlBehavior::ExecutionError => Err(FetchError::BitcoinCoreREST(
+                    "mock faucet failure".to_string(),
+                )),
             }
         }
 
@@ -791,6 +1033,36 @@ mod tests {
                 ControlBehavior::NotSupported => Err(FetchError::NotSupported {
                     node: "mock".to_string(),
                     operation: "set_p2p_network_active",
+                }),
+                ControlBehavior::DataError => Err(FetchError::DataError("bad input".to_string())),
+                ControlBehavior::ExecutionError => {
+                    Err(FetchError::BitcoinCoreREST("mock failure".to_string()))
+                }
+            }
+        }
+
+        async fn rewind_chain(&self, depth: u64) -> Result<BlockHash, FetchError> {
+            self.rewind_calls.lock().await.push(depth);
+            match self.chain_behavior {
+                ControlBehavior::Ok => Ok(BlockHash::all_zeros()),
+                ControlBehavior::NotSupported => Err(FetchError::NotSupported {
+                    node: "mock".to_string(),
+                    operation: "rewind_chain",
+                }),
+                ControlBehavior::DataError => Err(FetchError::DataError("bad input".to_string())),
+                ControlBehavior::ExecutionError => {
+                    Err(FetchError::BitcoinCoreREST("mock failure".to_string()))
+                }
+            }
+        }
+
+        async fn reconsider_block(&self, block_hash: &BlockHash) -> Result<(), FetchError> {
+            self.reconsider_calls.lock().await.push(*block_hash);
+            match self.chain_behavior {
+                ControlBehavior::Ok => Ok(()),
+                ControlBehavior::NotSupported => Err(FetchError::NotSupported {
+                    node: "mock".to_string(),
+                    operation: "reconsider_block",
                 }),
                 ControlBehavior::DataError => Err(FetchError::DataError("bad input".to_string())),
                 ControlBehavior::ExecutionError => {
@@ -825,6 +1097,8 @@ mod tests {
             extra_hotspot_heights: 0,
             network_type: NetworkType::Regtest,
             view_only_mode: false,
+            mempool_url: None,
+            access_info: None,
             stale_rate_ranges: test_stale_rate_ranges(),
             nodes: vec![Arc::new(node) as Arc<dyn Node>],
         }]
@@ -845,6 +1119,8 @@ mod tests {
             extra_hotspot_heights: 0,
             network_type: NetworkType::Regtest,
             view_only_mode,
+            mempool_url: None,
+            access_info: None,
             stale_rate_ranges: test_stale_rate_ranges(),
             nodes: nodes
                 .into_iter()
@@ -964,13 +1240,14 @@ mod tests {
             Json(MineBlockRequest {
                 node_id: 7,
                 count: None,
+                exclude_mempool_txs: None,
             }),
         )
         .await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.0.success);
-        assert_eq!(node.mine_calls.lock().await.as_slice(), &[1]);
+        assert_eq!(node.mine_calls.lock().await.as_slice(), &[(1, false)]);
     }
 
     #[tokio::test]
@@ -984,13 +1261,14 @@ mod tests {
             Json(MineBlockRequest {
                 node_id: 7,
                 count: Some(4),
+                exclude_mempool_txs: None,
             }),
         )
         .await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.0.success);
-        assert_eq!(node.mine_calls.lock().await.as_slice(), &[4]);
+        assert_eq!(node.mine_calls.lock().await.as_slice(), &[(4, false)]);
     }
 
     #[tokio::test]
@@ -1005,6 +1283,8 @@ mod tests {
             extra_hotspot_heights: 0,
             network_type: NetworkType::Regtest,
             view_only_mode: false,
+            mempool_url: None,
+            access_info: None,
             stale_rate_ranges: test_stale_rate_ranges(),
             nodes: vec![],
         }]);
@@ -1015,6 +1295,7 @@ mod tests {
             Json(MineBlockRequest {
                 node_id: 99,
                 count: None,
+                exclude_mempool_txs: None,
             }),
         )
         .await;
@@ -1035,6 +1316,7 @@ mod tests {
             Json(MineBlockRequest {
                 node_id: 7,
                 count: Some(1),
+                exclude_mempool_txs: None,
             }),
         )
         .await;
@@ -1057,6 +1339,7 @@ mod tests {
             Json(MineBlockRequest {
                 node_id: 7,
                 count: Some(1),
+                exclude_mempool_txs: None,
             }),
         )
         .await;
@@ -1065,6 +1348,73 @@ mod tests {
         assert!(!body.0.success);
         assert_eq!(body.0.error.as_deref(), Some("MINE_NODE_NOT_A_MINER"));
         assert!(node.mine_calls.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mine_block_passes_exclude_mempool_flag() {
+        let node = MockNode::new(7, ControlBehavior::Ok, ControlBehavior::Ok);
+        let state = test_state(single_node_network(1, node.clone()));
+
+        let (status, body) = mine_block(
+            Path(1),
+            State(state),
+            Json(MineBlockRequest {
+                node_id: 7,
+                count: Some(2),
+                exclude_mempool_txs: Some(true),
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.0.success);
+        assert_eq!(node.mine_calls.lock().await.as_slice(), &[(2, true)]);
+    }
+
+    #[tokio::test]
+    async fn rewind_chain_returns_invalidated_hash() {
+        let node = MockNode::new(7, ControlBehavior::Ok, ControlBehavior::Ok);
+        let state = test_state(single_node_network(1, node.clone()));
+
+        let (status, Json(body)) = rewind_chain(
+            Path(1),
+            State(state),
+            Json(RewindChainRequest {
+                node_id: 7,
+                depth: 3,
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.success);
+        let expected_hash = BlockHash::all_zeros().to_string();
+        assert_eq!(
+            body.invalidated_block_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
+        assert_eq!(node.rewind_calls.lock().await.as_slice(), &[3]);
+    }
+
+    #[tokio::test]
+    async fn reconsider_block_rejects_invalid_hash() {
+        let node = MockNode::new(7, ControlBehavior::Ok, ControlBehavior::Ok);
+        let state = test_state(single_node_network(1, node.clone()));
+
+        let (status, Json(body)) = reconsider_block(
+            Path(1),
+            State(state),
+            Json(ReconsiderBlockRequest {
+                node_id: 7,
+                block_hash: "not-a-hash".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(!body.success);
+        assert_eq!(body.error.as_deref(), Some("RECONSIDER_INVALID_BLOCK_HASH"));
+        assert!(node.reconsider_calls.lock().await.is_empty());
     }
 
     #[tokio::test]
@@ -1090,7 +1440,10 @@ mod tests {
         assert_eq!(body.0.mined_blocks, Some(0));
         assert_eq!(
             node.faucet_calls.lock().await.as_slice(),
-            &[("bcrt1qs758ursh4q9z627kt3pp5yysm78ddny6txaqgw".to_string(), 125_000_000)]
+            &[(
+                "bcrt1qs758ursh4q9z627kt3pp5yysm78ddny6txaqgw".to_string(),
+                125_000_000
+            )]
         );
     }
 
@@ -1128,6 +1481,8 @@ mod tests {
             extra_hotspot_heights: 0,
             network_type: NetworkType::Regtest,
             view_only_mode: false,
+            mempool_url: None,
+            access_info: None,
             stale_rate_ranges: test_stale_rate_ranges(),
             nodes: vec![],
         }]);
@@ -1208,6 +1563,8 @@ mod tests {
             extra_hotspot_heights: 0,
             network_type: NetworkType::Signet,
             view_only_mode: false,
+            mempool_url: None,
+            access_info: None,
             stale_rate_ranges: test_stale_rate_ranges(),
             nodes: vec![Arc::new(node.clone()) as Arc<dyn Node>],
         }]);
@@ -1377,6 +1734,8 @@ mod tests {
             extra_hotspot_heights: 0,
             network_type: NetworkType::Regtest,
             view_only_mode: false,
+            mempool_url: None,
+            access_info: None,
             stale_rate_ranges: test_stale_rate_ranges(),
             nodes: vec![],
         }]);
@@ -1436,6 +1795,7 @@ mod tests {
             Json(MineBlockRequest {
                 node_id: 7,
                 count: Some(0),
+                exclude_mempool_txs: None,
             }),
         )
         .await;
@@ -1474,6 +1834,7 @@ mod tests {
             Json(MineBlockRequest {
                 node_id: 7,
                 count: Some(1),
+                exclude_mempool_txs: None,
             }),
         )
         .await;
@@ -1517,6 +1878,7 @@ mod tests {
             Json(MineBlockRequest {
                 node_id: 7,
                 count: Some(1),
+                exclude_mempool_txs: None,
             }),
         )
         .await;

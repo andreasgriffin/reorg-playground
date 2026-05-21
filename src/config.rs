@@ -80,6 +80,11 @@ struct TomlNetwork {
     network_type: NetworkType,
     #[serde(default)]
     view_only_mode: bool,
+    mempool_url: Option<String>,
+    fulcrum_port: Option<u16>,
+    fulcrum_stats_port: Option<u16>,
+    mempool_web_port: Option<u16>,
+    mempool_api_port: Option<u16>,
     #[serde(default = "default_stale_rate_windows")]
     stale_rate_windows: Vec<u64>,
     #[serde(default = "default_stale_rate_include_all_time")]
@@ -100,8 +105,39 @@ pub struct Network {
     pub extra_hotspot_heights: usize,
     pub network_type: NetworkType,
     pub view_only_mode: bool,
+    pub mempool_url: Option<String>,
+    pub access_info: Option<NetworkAccessInfo>,
     pub stale_rate_ranges: Vec<StaleRateRange>,
     pub nodes: Vec<Arc<dyn Node>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct NetworkAccessInfo {
+    pub bitcoin_nodes: Vec<BitcoinNodeAccessInfo>,
+    pub fulcrum: Option<FulcrumAccessInfo>,
+    pub mempool_space: Option<MempoolSpaceAccessInfo>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct BitcoinNodeAccessInfo {
+    pub node_id: u32,
+    pub name: String,
+    pub rpc_port: Option<u16>,
+    pub rpc_user: Option<String>,
+    pub rpc_password: Option<String>,
+    pub p2p_port: Option<u16>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct FulcrumAccessInfo {
+    pub tcp_port: u16,
+    pub stats_port: Option<u16>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct MempoolSpaceAccessInfo {
+    pub web_port: u16,
+    pub api_port: Option<u16>,
 }
 
 impl fmt::Display for TomlNetwork {
@@ -139,6 +175,10 @@ struct TomlNode {
     supports_mining: Option<bool>,
     /// P2P listening port. When set, the node's P2P address is `{rpc_host}:{p2p_port}`.
     p2p_port: Option<u16>,
+    /// Host-published RPC port that users should connect to from outside the Docker network.
+    exposed_rpc_port: Option<u16>,
+    /// Host-published P2P port that users should connect to from outside the Docker network.
+    exposed_p2p_port: Option<u16>,
 }
 
 impl fmt::Display for TomlNode {
@@ -312,9 +352,56 @@ fn parse_toml_network(
         extra_hotspot_heights: toml_network.extra_hotspot_heights,
         network_type: toml_network.network_type.clone(),
         view_only_mode: toml_network.view_only_mode,
+        mempool_url: toml_network.mempool_url.clone(),
+        access_info: build_network_access_info(toml_network),
         stale_rate_ranges,
         nodes,
     })
+}
+
+fn build_network_access_info(toml_network: &TomlNetwork) -> Option<NetworkAccessInfo> {
+    let bitcoin_nodes: Vec<BitcoinNodeAccessInfo> = toml_network
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let rpc_port = node.exposed_rpc_port;
+            let p2p_port = node.exposed_p2p_port.or(node.p2p_port);
+            if rpc_port.is_none() && p2p_port.is_none() {
+                return None;
+            }
+
+            Some(BitcoinNodeAccessInfo {
+                node_id: node.id,
+                name: node.name.clone(),
+                rpc_port,
+                rpc_user: node.rpc_user.clone(),
+                rpc_password: node.rpc_password.clone(),
+                p2p_port,
+            })
+        })
+        .collect();
+
+    let fulcrum = toml_network.fulcrum_port.map(|tcp_port| FulcrumAccessInfo {
+        tcp_port,
+        stats_port: toml_network.fulcrum_stats_port,
+    });
+
+    let mempool_space = toml_network
+        .mempool_web_port
+        .map(|web_port| MempoolSpaceAccessInfo {
+            web_port,
+            api_port: toml_network.mempool_api_port,
+        });
+
+    if bitcoin_nodes.is_empty() && fulcrum.is_none() && mempool_space.is_none() {
+        None
+    } else {
+        Some(NetworkAccessInfo {
+            bitcoin_nodes,
+            fulcrum,
+            mempool_space,
+        })
+    }
 }
 
 fn normalize_stale_rate_ranges(
@@ -517,6 +604,70 @@ mod tests {
                 panic!("view_only_mode=true should parse: {}", e);
             }
         }
+    }
+
+    #[test]
+    fn parses_mempool_url() {
+        match parse_example_with(|config| {
+            network_mut(config, 2)
+                .as_table_mut()
+                .expect("network should be a table")
+                .insert(
+                    "mempool_url".to_string(),
+                    Value::String("http://localhost:8081".to_string()),
+                );
+        }) {
+            Ok(config) => {
+                let network = &config.networks[2];
+                assert_eq!(
+                    network.mempool_url.as_deref(),
+                    Some("http://localhost:8081")
+                );
+            }
+            Err(e) => {
+                panic!("mempool_url should parse: {}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn parses_network_access_info() {
+        let config = parse_example_with(|config| {
+            let network = network_mut(config, 2)
+                .as_table_mut()
+                .expect("network should be a table");
+            network.insert("fulcrum_port".to_string(), Value::Integer(50001));
+            network.insert("fulcrum_stats_port".to_string(), Value::Integer(8082));
+            network.insert("mempool_web_port".to_string(), Value::Integer(8081));
+            network.insert("mempool_api_port".to_string(), Value::Integer(8999));
+
+            let node = node_mut(config, 2, 0)
+                .as_table_mut()
+                .expect("node should be a table");
+            node.insert("exposed_rpc_port".to_string(), Value::Integer(18443));
+            node.insert("exposed_p2p_port".to_string(), Value::Integer(18444));
+        })
+        .expect("config should parse");
+
+        let access = config.networks[2]
+            .access_info
+            .as_ref()
+            .expect("access info should exist");
+        let node_access = access
+            .bitcoin_nodes
+            .iter()
+            .find(|node| node.node_id == 0)
+            .expect("node 0 access info should exist");
+        assert_eq!(node_access.rpc_port, Some(18443));
+        assert_eq!(node_access.p2p_port, Some(18444));
+        assert_eq!(
+            access.fulcrum.as_ref().map(|info| info.tcp_port),
+            Some(50001)
+        );
+        assert_eq!(
+            access.mempool_space.as_ref().map(|info| info.api_port),
+            Some(Some(8999))
+        );
     }
 
     #[test]

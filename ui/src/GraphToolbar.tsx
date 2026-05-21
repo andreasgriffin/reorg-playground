@@ -1,7 +1,10 @@
 import { Panel } from "@xyflow/react";
 import { Button } from "@/components/ui/button";
+import { AccessInfoButton } from "./AccessInfoButton";
 import { ActiveTipToolbarButton } from "./ActiveTipToolbarButton";
+import { AutoMineButton } from "./AutoMineButton";
 import { FaucetButton } from "./FaucetButton";
+import { MempoolButton } from "./MempoolButton";
 import { TriggerReorgButton } from "./TriggerReorgButton";
 import type { Network, NodeInfo } from "./types";
 
@@ -29,7 +32,23 @@ export function GraphToolbar({
 		<Panel position="top-right" className="m-2">
 			<div className="flex items-center gap-1.5">
 				{network && (
+					<AccessInfoButton
+						network={network}
+						buttonClassName={TOOLBAR_BUTTON}
+					/>
+				)}
+				{network && (
+					<MempoolButton network={network} buttonClassName={TOOLBAR_BUTTON} />
+				)}
+				{network && (
 					<FaucetButton
+						network={network}
+						nodes={allNodes}
+						buttonClassName={TOOLBAR_BUTTON}
+					/>
+				)}
+				{network && (
+					<AutoMineButton
 						network={network}
 						nodes={allNodes}
 						buttonClassName={TOOLBAR_BUTTON}
