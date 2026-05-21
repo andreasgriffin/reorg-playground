@@ -2,7 +2,8 @@ use crate::error::FetchError;
 use crate::node::shared_fetch;
 use crate::node::signet_mining;
 use crate::node::{
-    ActiveHeadersBatchProvider, FaucetSendResult, HeaderLocator, Node, NodeInfo, PeerInfo,
+    ActiveHeadersBatchProvider, FaucetSendResult, HeaderLocator, MineBlocksOptions, Node, NodeInfo,
+    PeerInfo,
 };
 use crate::types::{ChainTip, HeaderInfo, Tree};
 use async_trait::async_trait;
@@ -18,6 +19,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::str::FromStr;
 use tokio::task;
 
 /// Collects every `host:port` representation that may identify the same remote peer.
@@ -242,8 +244,8 @@ impl BitcoinCoreNode {
         T: DeserializeOwned + Send + 'static,
     {
         let auth = self.rpc_jsonrpc_auth()?;
-        let result = task::spawn_blocking(move || shared_fetch::jsonrpc_call(method, params, &auth))
-            .await?;
+        let result =
+            task::spawn_blocking(move || shared_fetch::jsonrpc_call(method, params, &auth)).await?;
         result.map_err(|e| {
             FetchError::BitcoinCoreREST(format!(
                 "Bitcoin Core RPC '{}' failed for {}: {}",
@@ -265,8 +267,8 @@ impl BitcoinCoreNode {
     {
         let auth = self.wallet_jsonrpc_auth(wallet)?;
         let wallet_name = wallet.to_string();
-        let result = task::spawn_blocking(move || shared_fetch::jsonrpc_call(method, params, &auth))
-            .await?;
+        let result =
+            task::spawn_blocking(move || shared_fetch::jsonrpc_call(method, params, &auth)).await?;
         result.map_err(|e| {
             FetchError::BitcoinCoreREST(format!(
                 "Bitcoin Core wallet RPC '{}' failed for {} wallet '{}': {}",
@@ -326,7 +328,10 @@ impl BitcoinCoreNode {
             .wallet_jsonrpc_required(FAUCET_WALLET, "getnewaddress", vec![])
             .await?;
         let _: Vec<String> = self
-            .rpc_jsonrpc_required("generatetoaddress", vec![json!(count), json!(reward_address)])
+            .rpc_jsonrpc_required(
+                "generatetoaddress",
+                vec![json!(count), json!(reward_address)],
+            )
             .await?;
         Ok(())
     }
@@ -354,6 +359,61 @@ impl BitcoinCoreNode {
             ],
         )
         .await
+    }
+
+    async fn mine_empty_regtest_block(
+        &self,
+        reward_address: &str,
+    ) -> Result<BlockHash, FetchError> {
+        let response: Value = self
+            .rpc_jsonrpc_required(
+                "generateblock",
+                vec![json!(reward_address), json!(Vec::<String>::new())],
+            )
+            .await?;
+        generated_block_hash_from_response(response)
+    }
+
+    async fn mine_regtest_blocks_excluding_mempool(
+        &self,
+        count: u64,
+    ) -> Result<Vec<BlockHash>, FetchError> {
+        self.ensure_wallet_loaded(MINER_WALLET).await?;
+        let mining_address = self
+            .with_wallet_rpc(MINER_WALLET, |rpc| rpc.get_new_address(None, None))
+            .await?
+            .assume_checked()
+            .to_string();
+
+        let mut mined_hashes = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            mined_hashes.push(self.mine_empty_regtest_block(&mining_address).await?);
+        }
+        Ok(mined_hashes)
+    }
+
+    async fn rewind_active_chain(&self, depth: u64) -> Result<BlockHash, FetchError> {
+        if depth == 0 {
+            return Err(FetchError::DataError(
+                "rewind_chain requires depth > 0".to_string(),
+            ));
+        }
+
+        let tip_height = self.with_rpc(|rpc| rpc.get_block_count()).await?;
+        let target_height = tip_height.checked_sub(depth - 1).ok_or_else(|| {
+            FetchError::DataError(format!(
+                "cannot rewind {} blocks from chain height {}",
+                depth, tip_height
+            ))
+        })?;
+
+        let invalidated_hash = self
+            .with_rpc(move |rpc| rpc.get_block_hash(target_height))
+            .await?;
+        let hash_to_invalidate = invalidated_hash;
+        self.with_rpc(move |rpc| rpc.invalidate_block(&hash_to_invalidate))
+            .await?;
+        Ok(invalidated_hash)
     }
 
     pub(super) fn node_name(&self) -> &str {
@@ -396,6 +456,24 @@ fn next_faucet_refill_block_count(immature_balance: f64, mined_blocks: u64) -> O
     } else {
         Some(blocks_to_mine)
     }
+}
+
+fn generated_block_hash_from_response(response: Value) -> Result<BlockHash, FetchError> {
+    let hash = response
+        .get("hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            FetchError::DataError(format!(
+                "generateblock response missing block hash: {}",
+                response
+            ))
+        })?;
+    BlockHash::from_str(hash).map_err(|error| {
+        FetchError::DataError(format!(
+            "generateblock returned invalid block hash '{}': {}",
+            hash, error
+        ))
+    })
 }
 
 #[async_trait]
@@ -564,6 +642,33 @@ impl Node for BitcoinCoreNode {
         Ok((active_new_headers, headers_needing_miners))
     }
 
+    async fn mine_new_blocks_with_options(
+        &self,
+        count: u64,
+        options: MineBlocksOptions,
+    ) -> Result<Vec<BlockHash>, FetchError> {
+        if count == 0 {
+            return Err(FetchError::DataError(
+                "mine_new_blocks requires count > 0".to_string(),
+            ));
+        }
+
+        match self.info.network_type {
+            bitcoin::Network::Regtest => {
+                if options.exclude_mempool_txs {
+                    self.mine_regtest_blocks_excluding_mempool(count).await
+                } else {
+                    self.mine_new_blocks(count).await
+                }
+            }
+            bitcoin::Network::Signet if !options.exclude_mempool_txs => {
+                signet_mining::mine_blocks(self, count).await
+            }
+            bitcoin::Network::Signet => Err(self.not_supported("mine_new_blocks_with_options")),
+            _ => Err(self.not_supported("mine_new_blocks_with_options")),
+        }
+    }
+
     async fn mine_new_blocks(&self, count: u64) -> Result<Vec<BlockHash>, FetchError> {
         if count == 0 {
             return Err(FetchError::DataError(
@@ -598,10 +703,7 @@ impl Node for BitcoinCoreNode {
         loop {
             match self.try_send_faucet_transaction(address, amount).await {
                 Ok(txid) => {
-                    return Ok(FaucetSendResult {
-                        txid,
-                        mined_blocks,
-                    });
+                    return Ok(FaucetSendResult { txid, mined_blocks });
                 }
                 Err(error) if faucet_error_is_insufficient_funds(&error) => {
                     let balances = self.faucet_wallet_balances().await?;
@@ -619,6 +721,27 @@ impl Node for BitcoinCoreNode {
                 }
                 Err(error) => return Err(error),
             }
+        }
+    }
+
+    async fn rewind_chain(&self, depth: u64) -> Result<BlockHash, FetchError> {
+        match self.info.network_type {
+            bitcoin::Network::Regtest | bitcoin::Network::Signet => {
+                self.rewind_active_chain(depth).await
+            }
+            _ => Err(self.not_supported("rewind_chain")),
+        }
+    }
+
+    async fn reconsider_block(&self, block_hash: &BlockHash) -> Result<(), FetchError> {
+        match self.info.network_type {
+            bitcoin::Network::Regtest | bitcoin::Network::Signet => {
+                let block_hash = *block_hash;
+                self.with_rpc(move |rpc| rpc.reconsider_block(&block_hash))
+                    .await?;
+                Ok(())
+            }
+            _ => Err(self.not_supported("reconsider_block")),
         }
     }
 
@@ -833,6 +956,41 @@ mod tests {
         assert!(matches!(result, Err(FetchError::DataError(_))));
     }
 
+    #[tokio::test]
+    async fn mine_new_blocks_with_options_rejects_excluding_mempool_on_signet() {
+        let node = test_node(1, bitcoin::Network::Signet);
+        let result = node
+            .mine_new_blocks_with_options(
+                1,
+                MineBlocksOptions {
+                    exclude_mempool_txs: true,
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(FetchError::NotSupported { .. })));
+    }
+
+    #[test]
+    fn generateblock_response_extracts_hash() {
+        let hash = generated_block_hash_from_response(json!({
+            "hash": "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206",
+            "hex": "00"
+        }))
+        .expect("hash should parse");
+
+        assert_eq!(
+            hash.to_string(),
+            "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
+        );
+    }
+
+    #[test]
+    fn generateblock_response_requires_hash() {
+        let error = generated_block_hash_from_response(json!({ "hex": "00" }))
+            .expect_err("missing hash should fail");
+        assert!(matches!(error, FetchError::DataError(_)));
+    }
+
     #[test]
     fn faucet_refill_bootstraps_when_no_immature_balance_exists() {
         assert_eq!(next_faucet_refill_block_count(0.0, 0), Some(101));
@@ -845,7 +1003,10 @@ mod tests {
 
     #[test]
     fn faucet_refill_stops_at_hard_cap() {
-        assert_eq!(next_faucet_refill_block_count(12.5, MAX_FAUCET_REFILL_BLOCKS), None);
+        assert_eq!(
+            next_faucet_refill_block_count(12.5, MAX_FAUCET_REFILL_BLOCKS),
+            None
+        );
     }
 
     #[test]

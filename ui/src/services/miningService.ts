@@ -1,10 +1,26 @@
-import type { MineBlockResponse } from '../types'
+import type { MineBlockResponse } from "../types";
 
-export async function mineBlock(networkId: number, nodeId: number, count?: number): Promise<MineBlockResponse> {
-  const res = await fetch(`/api/${networkId}/mine-block`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(count === undefined ? { node_id: nodeId } : { node_id: nodeId, count }),
-  })
-  return res.json()
+type MineBlockOptions = {
+	count?: number;
+	excludeMempoolTransactions?: boolean;
+};
+
+export async function mineBlock(
+	networkId: number,
+	nodeId: number,
+	options: MineBlockOptions = {},
+): Promise<MineBlockResponse> {
+	const { count, excludeMempoolTransactions } = options;
+	const res = await fetch(`/api/${networkId}/mine-block`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			node_id: nodeId,
+			...(count === undefined ? {} : { count }),
+			...(excludeMempoolTransactions === undefined
+				? {}
+				: { exclude_mempool_txs: excludeMempoolTransactions }),
+		}),
+	});
+	return res.json();
 }

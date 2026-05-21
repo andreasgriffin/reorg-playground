@@ -6,7 +6,7 @@ use std::time::SystemTime;
 
 use bitcoincore_rpc::bitcoin::hashes::hex::parse::HexToArrayError;
 
-use crate::config::{Network, NetworkType, StaleRateRange};
+use crate::config::{Network, NetworkAccessInfo, NetworkType, StaleRateRange};
 use crate::node::NodeInfo;
 
 use bitcoincore_rpc::bitcoin::BlockHash;
@@ -60,6 +60,8 @@ pub struct NetworkJson {
     pub description: String,
     pub network_type: NetworkType,
     pub view_only_mode: bool,
+    pub mempool_url: Option<String>,
+    pub access_info: Option<NetworkAccessInfo>,
 }
 
 impl NetworkJson {
@@ -70,6 +72,8 @@ impl NetworkJson {
             description: network.description.clone(),
             network_type: network.network_type.clone(),
             view_only_mode: network.view_only_mode,
+            mempool_url: network.mempool_url.clone(),
+            access_info: network.access_info.clone(),
         }
     }
 }

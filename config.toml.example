@@ -76,6 +76,7 @@ visible_heights_from_tip = 100
 extra_hotspot_heights = 20
 network_type = "Regtest"
 view_only_mode = false # Only affects node controls on Regtest/custom Signet.
+mempool_url = "" # Optional: when set, the UI shows an "Open Mempool" button for this network.
 stale_rate_windows = [100, 1000]
 stale_rate_include_all_time = true
 # Note: You can deploy two local regtest nodes via scripts/start-regtest-nodes.sh, or use docker-compose.test-env.yml.

@@ -8,7 +8,20 @@ In normal network conditions, deeper reorg events are uncommon. That makes it ea
 
 With Reorg Playground, you can watch network state in near real time and deliberately produce blocks, isolate nodes, and create competing branches in development environments (Regtest and custom Signet).
 
-https://github.com/user-attachments/assets/d5878016-3552-41db-83c7-b4acce98bbcd
+<p align="center">
+  <img src="./doc/screen 1.png" alt="Reorg Playground block graph overview" width="900" />
+</p>
+
+## Highlights
+
+- Reorg workflows built for testing: isolate nodes, mine competing branches, and trigger rollback-style reorgs directly from the UI.
+- Regtest faucet with real unconfirmed transactions: send coins to any regtest address without auto-confirming them, and only mine refill blocks when the faucet wallet actually needs funds.
+- Auto-mine loops for Regtest and custom Signet: pick one or more mining nodes, set a block interval in seconds, and let the app keep producing blocks in the background.
+- Bundled regtest explorer stack: run Fulcrum plus a local `mempool.space` instance alongside the nodes, then inspect blocks, mempool activity, and Electrum connectivity from the same environment.
+
+<p align="center">
+  <img src="./doc/screen 2.png" alt="Regtest access and explorer tooling" width="900" />
+</p>
 
 ## Getting Started
 
@@ -30,7 +43,7 @@ This stack starts:
 
 ### 2. Test Environment Docker
 
-Use this when you want the bundled Regtest and custom Signet cluster for local experimentation.
+Use this when you want the bundled 2-node Regtest pair plus the separate custom 3-node Signet cluster for local experimentation.
 
 1. Start the full test environment:
 
@@ -39,6 +52,8 @@ Use this when you want the bundled Regtest and custom Signet cluster for local e
    ```
 
 2. Open the app: `http://localhost`
+   The bundled regtest `mempool.space` instance is available at `http://localhost:8081`.
+   Fulcrum is exposed on `localhost:50001` (Electrum TCP) and `localhost:8082/stats`.
 3. Stop it:
 
    ```bash
@@ -56,9 +71,50 @@ This stack starts:
 - `backend`
 - `web`
 - 2 connected Bitcoin Core Regtest nodes (`bitcoind-regtest-a`, `bitcoind-regtest-b`)
+- 1 Fulcrum instance for the bundled regtest pair
+- 1 `mempool.space` instance for the bundled regtest pair
 - 3 Bitcoin Core custom Signet nodes: Miner A (`bitcoind-signet-a`), Miner B (`bitcoind-signet-b`), and Observer C (`bitcoind-signet-c`)
 
-### 3. Host-Managed Regtest and Custom Signet
+### 3. Regtest-Only Docker
+
+Use this when you want just the bundled 2-node Regtest pair plus the explorer stack, without the custom Signet cluster.
+
+1. Start the regtest-only stack:
+
+   ```bash
+   ./scripts/start-regtest-docker-env.sh
+   ```
+
+   Or directly:
+
+   ```bash
+   docker compose -f docker-compose.regtest.yml up -d --build
+   ```
+
+2. Open the app: `http://localhost`
+3. Open the bundled regtest explorer: `http://localhost:8081`
+4. Fulcrum is exposed on `localhost:50001` (Electrum TCP) and `localhost:8082/stats`
+5. Stop it:
+
+   ```bash
+   ./scripts/stop-regtest-docker-env.sh
+   ```
+
+6. Reset all regtest-only volumes when needed:
+
+   ```bash
+   docker compose -f docker-compose.regtest.yml down -v
+   ```
+
+This stack starts:
+
+- `backend`
+- `web`
+- 2 connected Bitcoin Core Regtest nodes (`bitcoind-regtest-a`, `bitcoind-regtest-b`)
+- 1 Fulcrum instance for the bundled regtest pair
+- 1 `mempool.space` instance for the bundled regtest pair
+
+### 4. Host-Managed Regtest and Custom Signet
 
 If you want to run the Bitcoin Core nodes directly on the host instead of through Docker, use the scripts in `scripts/` and adapt the variables at the top of each script for your local environment first.
 
@@ -71,7 +127,7 @@ For Regtest, start the 2-node setup with:
 
 This setup starts two connected Bitcoin Core Regtest nodes, `Node A` and `Node B`.
 
-For custom Signet, start the 3-node setup using:
+For custom Signet, start the separate 3-node Signet setup using:
 
 ```bash
 ./scripts/start-signet-nodes.sh
@@ -96,11 +152,33 @@ Host-managed Signet mining defaults to `./bitcoin-core/contrib/signet/miner`. Ov
 - Interactive block-header graph with forks, competing tips, and collapsible sections.
 - Multi-backend node observation (Bitcoin Core, Electrum, Esplora, btcd) via RPC/REST.
 - Observed stale-rate metric with configurable rolling windows and all-time view.
-- `Trigger Reorg` button for Bitcoin Core on Regtest and custom Signet: pick the node and depth, then create a reorg in two clicks.
+- `Trigger Reorg` button for Bitcoin Core on Regtest and custom Signet: pick the node and depth, rewind the private side, and create a competing branch in a few clicks.
+- Regtest faucet for Bitcoin Core: send real, unconfirmed wallet transactions to arbitrary regtest addresses from inside the app.
+- Auto-mine for Bitcoin Core on Regtest and custom Signet: set a timer, select one or more miners, and optionally randomize which selected node mines the next block.
+- Bundled regtest explorer stack: `Open Mempool` launches the included `mempool.space` instance, and Fulcrum is exposed for Electrum-compatible tools.
 - `Node Connection Manager` for Bitcoin Core on Regtest and custom Signet: inspect inbound and outbound peer links, adapt node connectivity to create reorg scenarios, and disable/enable P2P networking. Set `view_only_mode` per network to disable these controls.
+- Access dialog with ready-to-use connection details for bitcoind RPC/P2P, Fulcrum, and `mempool.space`, including copyable Linux smoke-test commands.
 - Config-driven networks and nodes via `config.toml`.
 - Header history persisted in SQLite.
 - Responsive UI for forks, node health, and network state.
+
+### Screenshots
+
+<p align="center">
+  <img src="./doc/screen 3.png" alt="Trigger reorg workflow" width="900" />
+</p>
+
+<p align="center">
+  <img src="./doc/screen 4.png" alt="Regtest faucet dialog" width="900" />
+</p>
+
+<p align="center">
+  <img src="./doc/screen 5.png" alt="Access info dialog with node and explorer endpoints" width="900" />
+</p>
+
+<p align="center">
+  <img src="./doc/screen 6.png" alt="Node connection manager" width="900" />
+</p>
 
 ### Node Connection Manager
 

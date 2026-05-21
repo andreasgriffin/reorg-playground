@@ -74,6 +74,11 @@ visible_heights_from_tip = 100
 extra_hotspot_heights = 20
 network_type = "Regtest"
 view_only_mode = false # Only affects node controls on Regtest/custom Signet.
+mempool_url = "http://localhost:8081"
+fulcrum_port = 50001
+fulcrum_stats_port = 8082
+mempool_web_port = 8081
+mempool_api_port = 8999
 stale_rate_windows = [100, 1000]
 stale_rate_include_all_time = true
 
@@ -88,6 +93,8 @@ stale_rate_include_all_time = true
     use_rest = false
     client_implementation = "bitcoincore"
     supports_mining = true # Only has an effect on Regtest/Signet. On Signet, ensure the node has signing keys.
+    exposed_rpc_port = 18443
+    exposed_p2p_port = 18444
 
     [[networks.nodes]]
     id = 1
@@ -100,6 +107,8 @@ stale_rate_include_all_time = true
     use_rest = false
     client_implementation = "bitcoincore"
     supports_mining = true # Only has an effect on Regtest/Signet. On Signet, ensure the node has signing keys.
+    exposed_rpc_port = 18453
+    exposed_p2p_port = 18454
 
 [[networks]]
 id = 3

@@ -20,6 +20,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { useFaucet } from "@/hooks/useFaucet";
 import { cn } from "@/utils";
+import { MempoolHashLink } from "./MempoolHashLink";
 import type { FaucetResponse, Network, NodeInfo } from "./types";
 
 type FaucetButtonProps = {
@@ -191,7 +192,14 @@ export function FaucetButton({
 								</p>
 								{result.txid && (
 									<p className="break-all font-mono text-xs text-current/90">
-										Txid: {result.txid}
+										Txid:{" "}
+										<MempoolHashLink
+											network={network}
+											hash={result.txid}
+											itemType="tx"
+											className="inline-flex items-center gap-1.5 break-all text-current underline-offset-4 hover:underline"
+											title={result.txid}
+										/>
 									</p>
 								)}
 							</div>

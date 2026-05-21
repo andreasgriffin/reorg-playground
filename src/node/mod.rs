@@ -28,6 +28,11 @@ pub struct FaucetSendResult {
     pub mined_blocks: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MineBlocksOptions {
+    pub exclude_mempool_txs: bool,
+}
+
 fn is_regtest_or_signet(network: BitcoinNetwork) -> bool {
     matches!(network, BitcoinNetwork::Regtest | BitcoinNetwork::Signet)
 }
@@ -93,6 +98,22 @@ pub trait Node: Send + Sync {
         })
     }
 
+    /// Mines new blocks with additional backend-specific options when supported.
+    async fn mine_new_blocks_with_options(
+        &self,
+        count: u64,
+        options: MineBlocksOptions,
+    ) -> Result<Vec<BlockHash>, FetchError> {
+        if options.exclude_mempool_txs {
+            return Err(FetchError::NotSupported {
+                node: self.info().implementation.clone(),
+                operation: "mine_new_blocks_with_options",
+            });
+        }
+
+        self.mine_new_blocks(count).await
+    }
+
     /// Broadcasts a faucet transaction when supported by the backend/network.
     async fn send_faucet_transaction(
         &self,
@@ -102,6 +123,24 @@ pub trait Node: Send + Sync {
         Err(FetchError::NotSupported {
             node: self.info().implementation.clone(),
             operation: "send_faucet_transaction",
+        })
+    }
+
+    /// Rewinds the active chain by invalidating the first block in the most recent `depth` block segment.
+    ///
+    /// Returns the block hash that was invalidated so callers can later reconsider it.
+    async fn rewind_chain(&self, _depth: u64) -> Result<BlockHash, FetchError> {
+        Err(FetchError::NotSupported {
+            node: self.info().implementation.clone(),
+            operation: "rewind_chain",
+        })
+    }
+
+    /// Removes a prior invalidation mark from a block so it can become active again if its chain wins.
+    async fn reconsider_block(&self, _block_hash: &BlockHash) -> Result<(), FetchError> {
+        Err(FetchError::NotSupported {
+            node: self.info().implementation.clone(),
+            operation: "reconsider_block",
         })
     }
 

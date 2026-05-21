@@ -915,6 +915,8 @@ mod tests {
             extra_hotspot_heights: 0,
             network_type: NetworkType::Regtest,
             view_only_mode: false,
+            mempool_url: None,
+            access_info: None,
             stale_rate_ranges: vec![StaleRateRange::Rolling(100)],
             nodes: nodes
                 .into_iter()
